@@ -1,73 +1,39 @@
 <?php
 /*
  * =================================================================================================
- * API Completa em PHP para o Sistema de Gestão da Clínica (Arquivo Único)
+ * API Completa em PHP para o Sistema de Gestão da Clínica (Versão Refatorada)
  * =================================================================================================
  *
  * Descrição:
- * Este arquivo único contém toda a lógica da API para interagir com o banco de dados da clínica.
- * Ele inclui a configuração, conexão com o banco, handlers para operações CRUD genéricas e
- * a lógica de negócio complexa para consulta de horários disponíveis.
+ * Este arquivo único contém uma API PHP completa e refatorada. A nova estrutura utiliza
+ * namespaces para melhor organização, um roteador centralizado e tratamento de erros aprimorado,
+ * mantendo a simplicidade de um único arquivo para deployment.
  *
- * --- INSTRUÇÕES DE CONFIGURAÇÃO DO SERVIDOR ---
+ * --- INSTRUÇÕES DE CONFIGURAÇÃO DO SERVIDOR (Easypanel / Nginx) ---
  *
- * Para que as URLs amigáveis (ex: /api/pacientes) funcionem, o seu servidor web precisa
- * redirecionar todas as requisições para este arquivo.
+ * O erro "404 Not Found" ocorre porque o Nginx precisa de uma regra para direcionar todas as
+ * requisições para este arquivo `api.php`.
  *
- * -------------------------------------------------------------------------------------------------
- * CONFIGURAÇÃO PARA NGINX (Causa do erro 404 Not Found)
- * -------------------------------------------------------------------------------------------------
- * Se você está usando Nginx, o arquivo .htaccess não funcionará. Você precisa editar o arquivo
- * de configuração do seu site (geralmente em /etc/nginx/sites-available/seu_dominio).
- * Dentro do bloco `server { ... }`, adicione ou modifique o bloco `location /` para:
- *
- * server {
- * # ... outras configurações como server_name e root ...
- * root /caminho/para/sua/api;
+ * 1. No seu painel do Easypanel, vá para o seu projeto.
+ * 2. Acesse a aba "Settings" (Configurações).
+ * 3. Encontre a seção "Nginx Configuration" (Configuração do Nginx).
+ * 4. Cole o seguinte bloco de código e salve:
  *
  * location / {
  * try_files $uri $uri/ /api.php?$query_string;
  * }
  *
- * location ~ \.php$ {
- * include snippets/fastcgi-php.conf;
- * fastcgi_pass unix:/var/run/php/php-fpm.sock; // Verifique o caminho do seu socket PHP-FPM
- * }
- * }
- *
- * Após salvar a alteração, reinicie o Nginx: `sudo systemctl restart nginx`
- *
- * -------------------------------------------------------------------------------------------------
- * Conteúdo para o arquivo .htaccess (APENAS PARA SERVIDORES APACHE):
- * -------------------------------------------------------------------------------------------------
- * <IfModule mod_rewrite.c>
- * RewriteEngine On
- * RewriteCond %{REQUEST_FILENAME} !-f
- * RewriteCond %{REQUEST_FILENAME} !-d
- * RewriteRule ^(.*)$ api.php?path=$1 [QSA,L]
- * </IfModule>
- * -------------------------------------------------------------------------------------------------
+ * 5. O Easypanel aplicará a configuração e reiniciará o serviço. Isso resolverá o erro 404.
  *
  * =================================================================================================
  */
 
 
 // =================================================================================================
-// SEÇÃO 1: CONFIGURAÇÃO E HEADERS
+// SEÇÃO 1: BOOTSTRAP E CONFIGURAÇÃO
 // =================================================================================================
 
-header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
-
-// Tratamento para requisições OPTIONS (pre-flight) do CORS
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-// Definição das credenciais do banco de dados
+// Definição de constantes de configuração
 define('DB_HOST', '69.62.93.202');
 define('DB_NAME', 'doctorbot');
 define('DB_USER', 'root');
@@ -75,259 +41,285 @@ define('DB_PASS', '9ac55e0e489bc5d43bbc');
 define('DB_PORT', '3306');
 define('DB_CHARSET', 'utf8mb4');
 
+// Função de tratamento de erro centralizada
+function handleError(Throwable $e) {
+    $code = is_int($e->getCode()) && $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500;
+    http_response_code($code);
+    echo json_encode([
+        'error' => [
+            'message' => $e->getMessage(),
+            'code' => $code,
+        ]
+    ]);
+    exit;
+}
+
+set_exception_handler('handleError');
+
+// Configuração dos headers HTTP
+header("Content-Type: application/json; charset=UTF-8");
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
+
+// Tratamento para requisições OPTIONS (pre-flight) do CORS
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(204); // No Content
+    exit();
+}
+
 
 // =================================================================================================
-// SEÇÃO 2: CLASSES DE LÓGICA (DATABASE E HANDLERS)
+// SEÇÃO 2: DEFINIÇÃO DAS CLASSES (LÓGICA DA APLICAÇÃO)
 // =================================================================================================
 
-/**
- * Classe Database (Singleton)
- * Gerencia a conexão PDO com o banco de dados para garantir que exista apenas uma instância.
- */
-class Database {
-    private static $instance = null;
-    private $pdo;
+namespace Api\Database {
+    use PDO;
+    use PDOException;
 
-    private function __construct() {
-        $dsn = 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=' . DB_CHARSET;
-        $options = [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES   => false,
-        ];
-        try {
-            $this->pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
-        } catch (PDOException $e) {
-            throw new PDOException($e->getMessage(), (int)$e->getCode());
+    /**
+     * Classe Database (Singleton)
+     * Gerencia a conexão PDO com o banco de dados.
+     */
+    class Database {
+        private static ?self $instance = null;
+        public PDO $pdo;
+
+        private function __construct() {
+            $dsn = 'mysql:host=' . \DB_HOST . ';port=' . \DB_PORT . ';dbname=' . \DB_NAME . ';charset=' . \DB_CHARSET;
+            $options = [
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+            ];
+            try {
+                $this->pdo = new PDO($dsn, \DB_USER, \DB_PASS, $options);
+            } catch (PDOException $e) {
+                throw new PDOException($e->getMessage(), (int)$e->getCode());
+            }
         }
-    }
 
-    public static function getInstance() {
-        if (self::$instance == null) {
-            self::$instance = new Database();
+        public static function getInstance(): self {
+            if (self::$instance === null) {
+                self::$instance = new self();
+            }
+            return self::$instance;
         }
-        return self::$instance;
-    }
-
-    public function getConnection() {
-        return $this->pdo;
     }
 }
 
-/**
- * Classe GenericHandler
- * Lida com as operações CRUD (Criar, Ler, Atualizar, Deletar) para qualquer tabela.
- */
-class GenericHandler {
-    private $pdo;
-    private $table;
+namespace Api\Handlers {
+    use PDO;
+    use Exception;
+    use DateTime;
+    use DateInterval;
+    use DatePeriod;
 
-    public function __construct($pdo, $table) {
-        $this->pdo = $pdo;
-        // Sanitiza o nome da tabela para prevenir SQL Injection básico
-        if (!preg_match('/^[a-zA-Z0-9_]+$/', $table)) {
-            throw new Exception("Nome de tabela inválido.", 400);
+    /**
+     * Classe GenericHandler
+     * Lida com as operações CRUD para qualquer tabela.
+     */
+    class GenericHandler {
+        public function __construct(private PDO $pdo, private string $table) {
+            if (!preg_match('/^[a-zA-Z0-9_]+$/', $this->table)) {
+                throw new Exception("Nome de tabela inválido.", 400);
+            }
         }
-        $this->table = $table;
-    }
 
-    public function handleGet($id = null) {
-        if ($id) {
-            $stmt = $this->pdo->prepare("SELECT * FROM `{$this->table}` WHERE id = ?");
-            $stmt->execute([$id]);
-            $result = $stmt->fetch();
-            if (!$result) throw new Exception("Registro não encontrado.", 404);
-            return $result;
-        } else {
+        public function get($id = null) {
+            if ($id) {
+                $stmt = $this->pdo->prepare("SELECT * FROM `{$this->table}` WHERE id = ?");
+                $stmt->execute([$id]);
+                $result = $stmt->fetch();
+                if (!$result) throw new Exception("Registro não encontrado.", 404);
+                return $result;
+            }
             $stmt = $this->pdo->query("SELECT * FROM `{$this->table}`");
             return $stmt->fetchAll();
         }
-    }
 
-    public function handlePost($data) {
-        if (empty($data)) throw new Exception("Dados não podem ser vazios.", 400);
-        $columns = implode(', ', array_map(fn($col) => "`$col`", array_keys($data)));
-        $placeholders = implode(', ', array_fill(0, count($data), '?'));
-        $sql = "INSERT INTO `{$this->table}` ($columns) VALUES ($placeholders)";
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute(array_values($data));
-        return ['message' => 'Registro criado com sucesso.', 'id' => $this->pdo->lastInsertId()];
-    }
-
-    public function handlePut($id, $data) {
-        if (empty($data)) throw new Exception("Dados não podem ser vazios.", 400);
-        $fields = implode(', ', array_map(fn($col) => "`$col` = ?", array_keys($data)));
-        $sql = "UPDATE `{$this->table}` SET $fields WHERE id = ?";
-        $values = array_values($data);
-        $values[] = $id;
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($values);
-        if ($stmt->rowCount() === 0) throw new Exception("Nenhum registro encontrado ou alterado para o ID fornecido.", 404);
-        return ['message' => 'Registro atualizado com sucesso.', 'updated_rows' => $stmt->rowCount()];
-    }
-
-    public function handleDelete($id) {
-        $sql = "DELETE FROM `{$this->table}` WHERE id = ?";
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([$id]);
-        if ($stmt->rowCount() === 0) throw new Exception("Nenhum registro encontrado para deletar com o ID fornecido.", 404);
-        return ['message' => 'Registro deletado com sucesso.', 'deleted_rows' => $stmt->rowCount()];
-    }
-}
-
-/**
- * Classe AgendaHandler
- * Lida com a lógica de negócio complexa para encontrar horários disponíveis.
- */
-class AgendaHandler {
-    private $pdo;
-
-    public function __construct($pdo) {
-        $this->pdo = $pdo;
-    }
-
-    public function getAvailableSlots($params) {
-        // Validação dos parâmetros
-        if (!isset($params['recurso_id']) || !isset($params['data'])) {
-            throw new Exception("Parâmetros 'recurso_id' e 'data' são obrigatórios.", 400);
+        public function create($data) {
+            if (empty($data)) throw new Exception("O corpo da requisição não pode ser vazio.", 400);
+            $columns = implode(', ', array_map(fn($col) => "`$col`", array_keys($data)));
+            $placeholders = implode(', ', array_fill(0, count($data), '?'));
+            $sql = "INSERT INTO `{$this->table}` ($columns) VALUES ($placeholders)";
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute(array_values($data));
+            return ['message' => 'Registro criado com sucesso.', 'id' => $this->pdo->lastInsertId()];
         }
-        $recurso_id = $params['recurso_id'];
-        $data_str = $params['data'];
-        $dia_semana = date('N', strtotime($data_str)) % 7 + 1; // 1=Dom, ..., 7=Sáb
 
-        // 1. Buscar regras de disponibilidade padrão
-        $stmt_regras = $this->pdo->prepare("SELECT * FROM regras_disponibilidade WHERE recurso_id = ? AND dia_semana = ?");
-        $stmt_regras->execute([$recurso_id, $dia_semana]);
-        $regras_disponibilidade = $stmt_regras->fetchAll();
-        if (empty($regras_disponibilidade)) return [];
+        public function update($id, $data) {
+            if (empty($data)) throw new Exception("O corpo da requisição não pode ser vazio.", 400);
+            $fields = implode(', ', array_map(fn($col) => "`$col` = ?", array_keys($data)));
+            $sql = "UPDATE `{$this->table}` SET $fields WHERE id = ?";
+            $values = array_values($data);
+            $values[] = $id;
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($values);
+            if ($stmt->rowCount() === 0) throw new Exception("Nenhum registro encontrado ou alterado.", 404);
+            return ['message' => 'Registro atualizado com sucesso.'];
+        }
 
-        // 2. Buscar agendamentos existentes
-        $stmt_agendados = $this->pdo->prepare("SELECT data_hora_inicio FROM agendamentos WHERE recurso_id = ? AND DATE(data_hora_inicio) = ? AND status_agendamento NOT IN ('CANCELADO_PACIENTE', 'CANCELADO_CLINICA')");
-        $stmt_agendados->execute([$recurso_id, $data_str]);
-        $slots_ocupados = $stmt_agendados->fetchAll(PDO::FETCH_COLUMN, 0);
-        $slots_ocupados = array_map(fn($dt) => date('H:i:s', strtotime($dt)), $slots_ocupados);
+        public function delete($id) {
+            $sql = "DELETE FROM `{$this->table}` WHERE id = ?";
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute([$id]);
+            if ($stmt->rowCount() === 0) throw new Exception("Registro não encontrado.", 404);
+            return ['message' => 'Registro deletado com sucesso.'];
+        }
+    }
 
-        // 3. Gerar todos os slots possíveis e remover os ocupados
-        $slots_disponiveis = [];
-        foreach ($regras_disponibilidade as $regra) {
-            $inicio = new DateTime($data_str . ' ' . $regra['hora_inicio']);
-            $fim = new DateTime($data_str . ' ' . $regra['hora_fim']);
-            $intervalo = new DateInterval('PT' . $regra['duracao_slot_minutos'] . 'M');
-            $periodo = new DatePeriod($inicio, $intervalo, $fim);
-            foreach ($periodo as $slot) {
-                if (!in_array($slot->format('H:i:s'), $slots_ocupados)) {
-                    $slots_disponiveis[] = $slot;
+    /**
+     * Classe AgendaHandler
+     * Lida com a lógica de negócio complexa para encontrar horários disponíveis.
+     */
+    class AgendaHandler {
+        public function __construct(private PDO $pdo) {}
+
+        public function getAvailableSlots($params) {
+            if (!isset($params['recurso_id']) || !isset($params['data'])) {
+                throw new Exception("Parâmetros 'recurso_id' e 'data' são obrigatórios.", 400);
+            }
+            $recurso_id = filter_var($params['recurso_id'], FILTER_VALIDATE_INT);
+            $data_str = $params['data'];
+
+            $regras = $this->getAvailabilityRules($recurso_id, $data_str);
+            if (empty($regras)) return [];
+
+            $ocupados = $this->getOccupiedSlots($recurso_id, $data_str);
+            $todos_slots = $this->generateAllPossibleSlots($regras, $data_str);
+            
+            $disponiveis = array_udiff($todos_slots, $ocupados, fn($a, $b) => $a <=> $b);
+
+            return $this->applyBusinessRules($disponiveis, $recurso_id, $params);
+        }
+
+        private function getAvailabilityRules($recurso_id, $data_str) {
+            $dia_semana = date('N', strtotime($data_str)) % 7 + 1;
+            $stmt = $this->pdo->prepare("SELECT * FROM regras_disponibilidade WHERE recurso_id = ? AND dia_semana = ?");
+            $stmt->execute([$recurso_id, $dia_semana]);
+            return $stmt->fetchAll();
+        }
+
+        private function getOccupiedSlots($recurso_id, $data_str) {
+            $stmt = $this->pdo->prepare("SELECT data_hora_inicio FROM agendamentos WHERE recurso_id = ? AND DATE(data_hora_inicio) = ? AND status_agendamento NOT IN ('CANCELADO_PACIENTE', 'CANCELADO_CLINICA')");
+            $stmt->execute([$recurso_id, $data_str]);
+            return $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+        }
+
+        private function generateAllPossibleSlots($regras, $data_str) {
+            $slots = [];
+            foreach ($regras as $regra) {
+                $inicio = new DateTime($data_str . ' ' . $regra['hora_inicio']);
+                $fim = new DateTime($data_str . ' ' . $regra['hora_fim']);
+                $intervalo = new DateInterval('PT' . $regra['duracao_slot_minutos'] . 'M');
+                $periodo = new DatePeriod($inicio, $intervalo, $fim);
+                foreach ($periodo as $slot) {
+                    $slots[] = $slot->format('Y-m-d H:i:s');
                 }
             }
+            return $slots;
         }
-        
-        // 4. Aplicar regras de restrição (lógica avançada)
-        $stmt_restricoes = $this->pdo->prepare("SELECT * FROM regras_restricao_agenda WHERE recurso_id = ?");
-        $stmt_restricoes->execute([$recurso_id]);
-        $regras_restricao = $stmt_restricoes->fetchAll();
 
-        if (!empty($regras_restricao)) {
-            $procedimento_id = $params['procedimento_id'] ?? null;
-            $convenio_id = $params['convenio_id'] ?? null;
-            $procedimento = null;
-            if ($procedimento_id) {
-                 $stmt_proc = $this->pdo->prepare("SELECT * FROM procedimentos WHERE id = ?");
-                 $stmt_proc->execute([$procedimento_id]);
-                 $procedimento = $stmt_proc->fetch();
+        private function applyBusinessRules($slots, $recurso_id, $params) {
+            $stmt = $this->pdo->prepare("SELECT * FROM regras_restricao_agenda WHERE recurso_id = ?");
+            $stmt->execute([$recurso_id]);
+            $restricoes = $stmt->fetchAll();
+            if (empty($restricoes)) {
+                return array_map(fn($dt) => date('H:i', strtotime($dt)), $slots);
             }
 
-            $slots_filtrados = array_filter($slots_disponiveis, function($slot) use ($regras_restricao, $convenio_id, $procedimento) {
-                foreach ($regras_restricao as $restricao) {
-                    $hora_slot = $slot->format('H:i:s');
-                    $hora_inicio_regra = $restricao['hora_inicio'] ?? '00:00:00';
-                    $hora_fim_regra = $restricao['hora_fim'] ?? '23:59:59';
-                    
-                    if ($hora_slot >= $hora_inicio_regra && $hora_slot < $hora_fim_regra) {
-                        switch ($restricao['tipo_restricao']) {
-                            case 'PERMITE_APENAS_CONVENIO':
-                                if ($convenio_id != $restricao['id_referencia']) return false;
-                                break;
-                            case 'RESTRINGE_CONVENIO':
-                                if ($convenio_id == $restricao['id_referencia']) return false;
-                                break;
-                            case 'SOMENTE_COM_CONTRASTE':
-                                if (!$procedimento || !$procedimento['requer_contraste']) return false;
-                                break;
-                            case 'SOMENTE_SEM_CONTRASTE':
-                                if ($procedimento && $procedimento['requer_contraste']) return false;
-                                break;
-                        }
+            $procedimento = isset($params['procedimento_id']) ? $this->getProcedure($params['procedimento_id']) : null;
+            $convenio_id = $params['convenio_id'] ?? null;
+
+            $slots_filtrados = array_filter($slots, function($slot_str) use ($restricoes, $convenio_id, $procedimento) {
+                $slot_time = date('H:i:s', strtotime($slot_str));
+                foreach ($restricoes as $r) {
+                    if ($slot_time >= ($r['hora_inicio'] ?? '00:00:00') && $slot_time < ($r['hora_fim'] ?? '23:59:59')) {
+                        if ($r['tipo_restricao'] === 'RESTRINGE_CONVENIO' && $convenio_id == $r['id_referencia']) return false;
+                        if ($r['tipo_restricao'] === 'PERMITE_APENAS_CONVENIO' && $convenio_id != $r['id_referencia']) return false;
+                        if ($r['tipo_restricao'] === 'SOMENTE_COM_CONTRASTE' && (!$procedimento || !$procedimento['requer_contraste'])) return false;
                     }
                 }
                 return true;
             });
-            $slots_disponiveis = array_values($slots_filtrados);
+
+            return array_map(fn($dt) => date('H:i', strtotime($dt)), $slots_filtrados);
         }
-        
-        return array_map(fn($dt) => $dt->format('H:i'), array_unique($slots_disponiveis));
+
+        private function getProcedure($id) {
+            $stmt = $this->pdo->prepare("SELECT * FROM procedimentos WHERE id = ?");
+            $stmt->execute([$id]);
+            return $stmt->fetch();
+        }
     }
 }
 
 
 // =================================================================================================
-// SEÇÃO 3: ROTEADOR PRINCIPAL E EXECUÇÃO
+// SEÇÃO 3: ROTEADOR E EXECUÇÃO
 // =================================================================================================
 
-try {
-    $pdo = Database::getInstance()->getConnection();
-    
-    // Análise da URL para roteamento
-    $path = isset($_GET['path']) ? $_GET['path'] : '';
-    $parts = explode('/', rtrim($path, '/'));
-    
-    $resource = $parts[0] ?? null;
-    $id = filter_var($parts[1] ?? null, FILTER_VALIDATE_INT);
+namespace Api\Router {
+    use Api\Database\Database;
+    use Api\Handlers\{GenericHandler, AgendaHandler};
+    use Exception;
 
-    if (!$resource) {
-        http_response_code(200);
-        echo json_encode(['status' => 'API da Clínica MF Diagnósticos está online.']);
-        exit;
+    class Router {
+        private \PDO $pdo;
+
+        public function __construct() {
+            $this->pdo = Database::getInstance()->pdo;
+        }
+
+        public function run() {
+            $path = trim($_GET['path'] ?? '', '/');
+            $parts = explode('/', $path);
+            $resource = $parts[0] ?? null;
+            $id = filter_var($parts[1] ?? null, FILTER_VALIDATE_INT);
+            $method = $_SERVER['REQUEST_METHOD'];
+
+            if (!$resource) {
+                echo json_encode(['status' => 'API da Clínica MF Diagnósticos está online.']);
+                return;
+            }
+
+            if ($resource === 'horarios-disponiveis') {
+                $handler = new AgendaHandler($this->pdo);
+                $result = $handler->getAvailableSlots($_GET);
+                echo json_encode(['horarios' => $result]);
+                return;
+            }
+
+            $handler = new GenericHandler($this->pdo, $resource);
+            $data = json_decode(file_get_contents('php://input'), true);
+
+            $result = match ($method) {
+                'GET'    => $handler->get($id),
+                'POST'   => $this->withStatus(201, fn() => $handler->create($data)),
+                'PUT'    => $this->withStatus(200, fn() => $handler->update($this->ensureId($id), $data)),
+                'DELETE' => $this->withStatus(200, fn() => $handler->delete($this->ensureId($id))),
+                default  => throw new Exception("Método não suportado.", 405),
+            };
+
+            echo json_encode($result);
+        }
+
+        private function ensureId($id) {
+            if (!$id) throw new Exception("Um ID numérico é obrigatório na URL.", 400);
+            return $id;
+        }
+
+        private function withStatus(int $code, callable $callback) {
+            http_response_code($code);
+            return $callback();
+        }
     }
 
-    // Roteamento especial para endpoints complexos
-    if ($resource === 'horarios-disponiveis') {
-        $handler = new AgendaHandler($pdo);
-        $result = $handler->getAvailableSlots($_GET);
-        echo json_encode(['horarios' => $result]);
-        exit;
-    }
-
-    // Roteamento genérico para CRUD
-    $handler = new GenericHandler($pdo, $resource);
-    $method = $_SERVER['REQUEST_METHOD'];
-    $data = json_decode(file_get_contents('php://input'), true);
-
-    switch ($method) {
-        case 'GET':
-            $result = $handler->handleGet($id);
-            break;
-        case 'POST':
-            $result = $handler->handlePost($data);
-            http_response_code(201); // Created
-            break;
-        case 'PUT':
-            if (!$id) throw new Exception("ID é obrigatório para a operação PUT na URL (ex: /recurso/123).", 400);
-            $result = $handler->handlePut($id, $data);
-            break;
-        case 'DELETE':
-            if (!$id) throw new Exception("ID é obrigatório para a operação DELETE na URL (ex: /recurso/123).", 400);
-            $result = $handler->handleDelete($id);
-            break;
-        default:
-            throw new Exception("Método não suportado.", 405);
-    }
-
-    echo json_encode($result);
-
-} catch (Exception $e) {
-    // Tratamento de erro centralizado
-    $code = is_int($e->getCode()) && $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500;
-    http_response_code($code);
-    echo json_encode(['error' => $e->getMessage()]);
+    // Ponto de entrada da API
+    $router = new Router();
+    $router->run();
 }
 ?>
