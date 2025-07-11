@@ -9,14 +9,36 @@
  * Ele inclui a configuração, conexão com o banco, handlers para operações CRUD genéricas e
  * a lógica de negócio complexa para consulta de horários disponíveis.
  *
- * Como usar:
- * 1. Crie um diretório no seu servidor web (ex: /api/).
- * 2. Salve este arquivo como `api.php` (ou `index.php`) dentro do diretório.
- * 3. Crie um arquivo `.htaccess` no mesmo diretório com o conteúdo abaixo para
- * habilitar URLs amigáveis.
+ * --- INSTRUÇÕES DE CONFIGURAÇÃO DO SERVIDOR ---
+ *
+ * Para que as URLs amigáveis (ex: /api/pacientes) funcionem, o seu servidor web precisa
+ * redirecionar todas as requisições para este arquivo.
  *
  * -------------------------------------------------------------------------------------------------
- * Conteúdo para o arquivo .htaccess:
+ * CONFIGURAÇÃO PARA NGINX (Causa do erro 404 Not Found)
+ * -------------------------------------------------------------------------------------------------
+ * Se você está usando Nginx, o arquivo .htaccess não funcionará. Você precisa editar o arquivo
+ * de configuração do seu site (geralmente em /etc/nginx/sites-available/seu_dominio).
+ * Dentro do bloco `server { ... }`, adicione ou modifique o bloco `location /` para:
+ *
+ * server {
+ * # ... outras configurações como server_name e root ...
+ * root /caminho/para/sua/api;
+ *
+ * location / {
+ * try_files $uri $uri/ /api.php?$query_string;
+ * }
+ *
+ * location ~ \.php$ {
+ * include snippets/fastcgi-php.conf;
+ * fastcgi_pass unix:/var/run/php/php-fpm.sock; // Verifique o caminho do seu socket PHP-FPM
+ * }
+ * }
+ *
+ * Após salvar a alteração, reinicie o Nginx: `sudo systemctl restart nginx`
+ *
+ * -------------------------------------------------------------------------------------------------
+ * Conteúdo para o arquivo .htaccess (APENAS PARA SERVIDORES APACHE):
  * -------------------------------------------------------------------------------------------------
  * <IfModule mod_rewrite.c>
  * RewriteEngine On
@@ -25,15 +47,6 @@
  * RewriteRule ^(.*)$ api.php?path=$1 [QSA,L]
  * </IfModule>
  * -------------------------------------------------------------------------------------------------
- *
- * Exemplos de Endpoints:
- * - GET /api/pacientes          -> Lista todos os pacientes
- * - GET /api/pacientes/1        -> Busca o paciente com ID 1
- * - POST /api/procedimentos     -> Cria um novo procedimento (enviar JSON no corpo)
- * - PUT /api/agendamentos/123   -> Atualiza o agendamento com ID 123 (enviar JSON no corpo)
- * - DELETE /api/profissionais/5 -> Deleta o profissional com ID 5
- * - GET /api/horarios-disponiveis?recurso_id=1&data=2024-10-28&procedimento_id=5&convenio_id=700
- * -> Busca horários disponíveis aplicando todas as regras de negócio.
  *
  * =================================================================================================
  */
